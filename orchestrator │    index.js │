@@ -1,0 +1,90 @@
+const express = require("express");
+const { Kafka } = require("kafkajs");
+
+const app = express();
+app.use(express.json());
+
+const kafka = new Kafka({
+  clientId: "orchestrator",
+  brokers: ["localhost:9092"]
+});
+
+const producer = kafka.producer();
+const consumer = kafka.consumer({ groupId: "orchestrator-group" });
+
+async function startKafka(){
+
+  await producer.connect();
+  await consumer.connect();
+
+  await consumer.subscribe({ topic: "verification_result" });
+  await consumer.subscribe({ topic: "credit_result" });
+
+  await consumer.run({
+    eachMessage: async ({ topic, message }) => {
+
+      const data = JSON.parse(message.value);
+
+      if(topic === "verification_result"){
+
+        if(data.status === "success"){
+
+          console.log("Verification success → starting credit check");
+
+          await producer.send({
+            topic: "credit_request",
+            messages: [{ value: JSON.stringify(data) }]
+          });
+
+        } else {
+
+          console.log("Verification failed");
+
+        }
+
+      }
+
+      if(topic === "credit_result"){
+
+        if(data.status === "approved"){
+
+          console.log("Loan Approved");
+
+        } else {
+
+          console.log("Credit Failed → Rollback Verification");
+
+          await producer.send({
+            topic: "rollback_verification",
+            messages: [{ value: JSON.stringify(data) }]
+          });
+
+        }
+
+      }
+
+    }
+  });
+
+}
+
+app.post("/start", async (req, res) => {
+
+  console.log("Starting Loan Workflow");
+
+  await producer.send({
+    topic: "verification_request",
+    messages: [{ value: JSON.stringify(req.body) }]
+  });
+
+  res.send("Verification Started");
+
+});
+
+app.listen(3000, async () => {
+
+  console.log("Orchestrator running on port 3000");
+
+  await startKafka();
+
+});
